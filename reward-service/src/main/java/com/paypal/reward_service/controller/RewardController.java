@@ -11,7 +11,7 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/rewards")
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "${cors.allowed.origins:http://localhost:3000}")
 public class RewardController {
 
     private final RewardService rewardService;

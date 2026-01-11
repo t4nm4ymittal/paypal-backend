@@ -10,6 +10,7 @@ import com.paypal.transaction_service.kafka.TransactionPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -25,7 +26,8 @@ import java.util.Optional;
 public class TransactionService {
 
     private static final Logger logger = LoggerFactory.getLogger(TransactionService.class);
-
+    @Value("${WALLET_SERVICE_URL:http://localhost:8093/api/v1/wallets}")
+    private String walletServiceUrl;
     private final TransactionRepository repository;
     private final TransactionPublisher publisher;
     private final ObjectMapper objectMapper;
@@ -48,7 +50,7 @@ public class TransactionService {
         req.setDescription("PENDING");
         Transaction savedTransaction = repository.save(t);
         System.out.println("📥 Transaction PENDING saved: " + savedTransaction);
-        String walletServiceUrl = "http://localhost:8093/api/v1/wallets"; // wallet service base URL
+        // wallet service base URL
         HttpHeaders headers = new HttpHeaders();
         headers.set("Content-Type", "application/json");
 

@@ -6,7 +6,10 @@ import com.paypal.transaction_service.transaction.dto.dto.*;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.*;
 
-@FeignClient(name = "wallet-service", url = "http://localhost:8093/api/v1/wallets")
+@FeignClient(
+        name = "wallet-service",
+        url = "${WALLET_SERVICE_URL:http://localhost:8093/api/v1/wallets}"
+)
 public interface WalletClient {
 
     @PostMapping("/debit")

@@ -8,17 +8,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.core.io.Resource;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -62,25 +57,21 @@ public class KafkaConsumerConfig {
         // consumer behavior
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
-        props.put("security.protocol", "SSL");
+
         // SSL setup using PEM files located on the classpath
-        Resource caPemResource = new ClassPathResource(truststoreResource);
-        if (caPemResource.exists()) {
-            File caTempFile = createTempFileFromResource(caPemResource, "kafka-ca", ".pem");
-            props.put("ssl.truststore.location", caTempFile.getAbsolutePath());
+        ClassPathResource trust = new ClassPathResource(truststoreResource);
+        ClassPathResource key = new ClassPathResource(keystoreResource);
+
+        // resolve to absolute paths if available
+        if (trust.exists() && key.exists()) {
+            props.put("security.protocol", "SSL");
+            props.put("ssl.truststore.location", trust.getFile().getAbsolutePath());
             props.put("ssl.truststore.type", "PEM");
-        }
-        Resource svcPemResource = new ClassPathResource(keystoreResource);
-        if (svcPemResource.exists()) {
-            File svcTempFile = createTempFileFromResource(svcPemResource, "kafka-svc", ".pem");
-            props.put("ssl.keystore.location", svcTempFile.getAbsolutePath());
+            props.put("ssl.keystore.location", key.getFile().getAbsolutePath());
             props.put("ssl.keystore.type", "PEM");
+        } else {
+            logger.warn("Kafka SSL resources not found on classpath: {} {}, proceeding without ssl file paths (check config)", truststoreResource, keystoreResource);
         }
-
-
-
-
-
 
         logger.info("Kafka consumer factory configured: bootstrapServers={} groupId={} (effective={})", bootstrapServers, groupId, effectiveGroupId);
 
@@ -93,17 +84,5 @@ public class KafkaConsumerConfig {
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(3);
         return factory;
-
-
     }
-
-    private File createTempFileFromResource(Resource resource, String prefix, String suffix) throws IOException {
-        try (InputStream inputStream = resource.getInputStream()) {
-            File tempFile = File.createTempFile(prefix, suffix);
-            tempFile.deleteOnExit(); // Delete on JVM shutdown
-            Files.copy(inputStream, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            return tempFile;
-        }
-    }
-
 }

@@ -8,12 +8,17 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -35,54 +40,73 @@ public class KafkaConsumerConfig {
     @Value("${kafka.ssl.keystore:svc.pem}")
     private String keystoreResource;
 
+    @Value("${kafka.ssl.key-password:}")
+    private String keyPassword;
+
     @Value("${kafka.debug.unique-group:false}")
     private boolean uniqueGroup;
 
     @Bean
     public ConsumerFactory<String, String> consumerFactory() throws IOException {
+
         Map<String, Object> props = new HashMap<>();
 
-        // compute effective group id (allow debug override to force new group)
-        String effectiveGroupId = groupId;
-        if (uniqueGroup) {
-            effectiveGroupId = groupId + "-" + System.currentTimeMillis();
-        }
+        String effectiveGroupId = uniqueGroup
+                ? groupId + "-" + System.currentTimeMillis()
+                : groupId;
 
-        // basic connection settings
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, effectiveGroupId);
-
-        // consumer behavior
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
 
-        // SSL setup using PEM files located on the classpath
-        ClassPathResource trust = new ClassPathResource(truststoreResource);
-        ClassPathResource key = new ClassPathResource(keystoreResource);
+        // ---------- SSL (Aiven / Cloud Safe) ----------
+        props.put("security.protocol", "SSL");
+        props.put("ssl.endpoint.identification.algorithm", "");
 
-        // resolve to absolute paths if available
-        if (trust.exists() && key.exists()) {
-            props.put("security.protocol", "SSL");
-            props.put("ssl.truststore.location", trust.getFile().getAbsolutePath());
-            props.put("ssl.truststore.type", "PEM");
-            props.put("ssl.keystore.location", key.getFile().getAbsolutePath());
-            props.put("ssl.keystore.type", "PEM");
-        } else {
-            logger.warn("Kafka SSL resources not found on classpath: {} {}, proceeding without ssl file paths (check config)", truststoreResource, keystoreResource);
+        // CA
+        Resource caPem = new ClassPathResource(truststoreResource);
+        File caFile = createTempFile(caPem, "kafka-ca", ".pem");
+        props.put("ssl.truststore.location", caFile.getAbsolutePath());
+        props.put("ssl.truststore.type", "PEM");
+
+        // Client cert
+        Resource svcPem = new ClassPathResource(keystoreResource);
+        File svcFile = createTempFile(svcPem, "kafka-svc", ".pem");
+        props.put("ssl.keystore.location", svcFile.getAbsolutePath());
+        props.put("ssl.keystore.type", "PEM");
+
+        // Private key password (required by Aiven)
+        if (!keyPassword.isEmpty()) {
+            props.put("ssl.key.password", keyPassword);
         }
 
-        logger.info("Kafka consumer factory configured: bootstrapServers={} groupId={} (effective={})", bootstrapServers, groupId, effectiveGroupId);
+        logger.info("Kafka consumer configured | bootstrap={} | group={}",
+                bootstrapServers, effectiveGroupId);
 
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() throws IOException {
-        ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
+    public ConcurrentKafkaListenerContainerFactory<String, String>
+    kafkaListenerContainerFactory() throws IOException {
+
+        ConcurrentKafkaListenerContainerFactory<String, String> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(3);
         return factory;
+    }
+
+    private File createTempFile(Resource resource, String prefix, String suffix) throws IOException {
+        try (InputStream in = resource.getInputStream()) {
+            File temp = File.createTempFile(prefix, suffix);
+            temp.deleteOnExit();
+            Files.copy(in, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            return temp;
+        }
     }
 }

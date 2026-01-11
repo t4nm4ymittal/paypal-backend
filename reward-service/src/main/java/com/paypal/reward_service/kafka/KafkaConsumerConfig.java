@@ -40,73 +40,80 @@ public class KafkaConsumerConfig {
     @Value("${kafka.ssl.keystore:svc.pem}")
     private String keystoreResource;
 
-    @Value("${kafka.ssl.key-password:}")
-    private String keyPassword;
-
     @Value("${kafka.debug.unique-group:false}")
     private boolean uniqueGroup;
 
     @Bean
     public ConsumerFactory<String, String> consumerFactory() throws IOException {
-
         Map<String, Object> props = new HashMap<>();
 
-        String effectiveGroupId = uniqueGroup
-                ? groupId + "-" + System.currentTimeMillis()
-                : groupId;
+        // compute effective group id (allow debug override to force new group)
+        String effectiveGroupId = groupId;
+        if (uniqueGroup) {
+            effectiveGroupId = groupId + "-" + System.currentTimeMillis();
+        }
 
+        // basic connection settings
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, effectiveGroupId);
+
+        // consumer behavior
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
 
-        // ---------- SSL (Aiven / Cloud Safe) ----------
-        props.put("security.protocol", "SSL");
-        props.put("ssl.endpoint.identification.algorithm", "");
+        // SSL setup using PEM files located on the classpath
+        Resource trust = new ClassPathResource(truststoreResource);
+        Resource key = new ClassPathResource(keystoreResource);
 
-        // CA
-        Resource caPem = new ClassPathResource(truststoreResource);
-        File caFile = createTempFile(caPem, "kafka-ca", ".pem");
-        props.put("ssl.truststore.location", caFile.getAbsolutePath());
-        props.put("ssl.truststore.type", "PEM");
+        // Extract resources to temp files (required when running from JAR)
+        if (trust.exists() && key.exists()) {
+            props.put("security.protocol", "SSL");
 
-        // Client cert
-        Resource svcPem = new ClassPathResource(keystoreResource);
-        File svcFile = createTempFile(svcPem, "kafka-svc", ".pem");
-        props.put("ssl.keystore.location", svcFile.getAbsolutePath());
-        props.put("ssl.keystore.type", "PEM");
+            // Extract CA certificate to temp file
+            File trustFile = extractToTempFile(trust, "kafka-truststore", ".pem");
+            props.put("ssl.truststore.location", trustFile.getAbsolutePath());
+            props.put("ssl.truststore.type", "PEM");
 
-        // Private key password (required by Aiven)
-        if (!keyPassword.isEmpty()) {
-            props.put("ssl.key.password", keyPassword);
+            // Extract client certificate to temp file
+            File keyFile = extractToTempFile(key, "kafka-keystore", ".pem");
+            props.put("ssl.keystore.location", keyFile.getAbsolutePath());
+            props.put("ssl.keystore.type", "PEM");
+
+            logger.info("SSL enabled with truststore={} and keystore={}",
+                    trustFile.getAbsolutePath(), keyFile.getAbsolutePath());
+        } else {
+            logger.warn("Kafka SSL resources not found on classpath: {} {}, proceeding without SSL",
+                    truststoreResource, keystoreResource);
         }
 
-        logger.info("Kafka consumer configured | bootstrap={} | group={}",
-                bootstrapServers, effectiveGroupId);
+        logger.info("Kafka consumer factory configured: bootstrapServers={} groupId={} (effective={})",
+                bootstrapServers, groupId, effectiveGroupId);
 
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String>
-    kafkaListenerContainerFactory() throws IOException {
-
+    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() throws IOException {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
-
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(3);
         return factory;
     }
 
-    private File createTempFile(Resource resource, String prefix, String suffix) throws IOException {
+    /**
+     * Extract a classpath resource to a temporary file.
+     * This is necessary when running from a JAR because Kafka requires actual file paths.
+     */
+    private File extractToTempFile(Resource resource, String prefix, String suffix) throws IOException {
         try (InputStream in = resource.getInputStream()) {
-            File temp = File.createTempFile(prefix, suffix);
-            temp.deleteOnExit();
-            Files.copy(in, temp.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            return temp;
+            File tempFile = File.createTempFile(prefix, suffix);
+            tempFile.deleteOnExit();
+            Files.copy(in, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            logger.debug("Extracted resource to temp file: {}", tempFile.getAbsolutePath());
+            return tempFile;
         }
     }
 }
